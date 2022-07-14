@@ -2,6 +2,7 @@
 -- it is HIGHLY recommended that this module is used locally
 
 
+
 export type NumberSequence2D = {
 	X: NumberSequence,
 	Y: NumberSequence
@@ -16,6 +17,8 @@ export type NumberRange3D = {
 export type ParticleEmitter3D = {
 	__index: ParticleEmitter3D,
 	particles: {Particle},
+	NumActiveParticles: number,
+	Cache: {Particle},
 	Enabled: boolean,
 	Container: Folder,
 	Mesh: string,
@@ -39,13 +42,16 @@ export type ParticleEmitter3D = {
 	__runServiceConnection: RBXScriptConnection,
 	new: (Anchor: BasePart, Mesh: string, Texture: string) -> (ParticleEmitter3D),
 	Emit: (self: ParticleEmitter3D, count: number) -> (ParticleEmitter3D),
-	Destroy: (self: ParticleEmitter3D) -> ()
+	Destroy: (self: ParticleEmitter3D) -> (),
+	CreateParticle: (self: ParticleEmitter3D) -> (ParticleEmitter3D)
 }
 
 
 export type Particle = {
 	__index: Particle,
 	Instance: BasePart,
+	DestroyOnComplete: boolean,
+	Emitter: ParticleEmitter3D,
 	Mesh: SpecialMesh,
 	Speed: Vector3,
 	CFrame: CFrame,
@@ -60,11 +66,13 @@ export type Particle = {
 	Ticks: number,
 	maxAge: number,
 	isDead: boolean,
-	Canvas: CanvasGroup,
 	Position: Vector3,
 	Rotation: Vector3,
-	new: (Emitter: ParticleEmitter3D, Parent: GuiObject?) -> (Particle),
-	Update: (self: Particle, delta: number) -> (),
+	Cached: boolean,
+	Revive: (self: Particle) -> Particle,
+	Cache: (self: Particle) -> Particle,
+	new: (Emitter: ParticleEmitter3D, DestroyOnComplete: boolean) -> (Particle),
+	Update: (self: Particle, delta: number) -> (CFrame),
 	Destroy: (self: Particle) -> ()
 }
 
@@ -131,14 +139,11 @@ local function newObj(emitter: ParticleEmitter3D)
 	part.CanQuery = false
 	part.Size = Vector3.one * emitter.Size.Keypoints[1].Value
 	part.Color = evalCS(emitter.Color, 0) :: Color3
-	local mesh
-	if emitter.Mesh then
-		mesh = Instance.new("SpecialMesh", part)
-		mesh.MeshType = Enum.MeshType.FileMesh
-		mesh.MeshId = emitter.Mesh
-		mesh.TextureId = emitter.Texture
-		mesh.Scale = part.Size
-	end
+	local mesh = Instance.new("SpecialMesh", part)
+	mesh.MeshType = Enum.MeshType.FileMesh
+	mesh.MeshId = emitter.Mesh
+	mesh.TextureId = emitter.Texture
+	mesh.Scale = part.Size
 	return part, mesh
 end
 
@@ -206,11 +211,14 @@ local function getSpawnPosition(emissionDirection: Vector3, emitter: ParticleEmi
 	end
 end
 
-function ParticleClass.new(emitter: ParticleEmitter3D)
+function ParticleClass.new(emitter: ParticleEmitter3D, DestroyOnComplete: boolean)
+
 	local self: Particle = {} :: Particle
 	self.Instance, self.Mesh = newObj(emitter)
+	self.DestroyOnComplete = DestroyOnComplete
 	self.Color = emitter.Color
 	self.Transparency = emitter.Transparency
+	self.Emitter = emitter
 	self.EmissionDirection = surfaceToVector(emitter.EmissionDirection) * getDirection(emitter.ShapeInOut) 
 	self.Position = getSpawnPosition(self.EmissionDirection, emitter)
 	self.Instance.Position = self.Position
@@ -227,8 +235,6 @@ function ParticleClass.new(emitter: ParticleEmitter3D)
 		math.rad(math.random(emitter.RotSpeed.Y.Min, emitter.RotSpeed.Y.Max)),
 		math.rad(math.random(emitter.RotSpeed.Z.Min, emitter.RotSpeed.Z.Max))
 	)
-
-	--unrotate the acceleration since the speed will be rotated
 	self.Acceleration = emitter.Acceleration
 	self.Rotation = Vector3.zero
 	self.Transparency = emitter.Transparency
@@ -237,16 +243,62 @@ function ParticleClass.new(emitter: ParticleEmitter3D)
 	self.maxAge = math.random(emitter.Lifetime.Min, emitter.Lifetime.Max)
 	self.isDead = false
 	self.Instance.Parent = emitter.Container
+
 	return setmetatable(self :: any, ParticleClass)
 end
 
+function ParticleClass:Revive()
+	self.Mesh.MeshId = self.Emitter.Mesh
+	self.Mesh.TextureId = self.Emitter.Texture
+	self.Color = self.Emitter.Color
+	self.Transparency = self.Emitter.Transparency
+	self.EmissionDirection = surfaceToVector(self.Emitter.EmissionDirection) * getDirection(self.Emitter.ShapeInOut) 
+	self.Position = getSpawnPosition(self.EmissionDirection, self.Emitter)
+	self.Size = self.Emitter.Size
+	self.Emitter.preSpawn(self)
+	self.Speed = self.Emitter.Speed * self.EmissionDirection
+	self.SpreadAngle = Vector2.new(
+		math.rad(math.random(-self.Emitter.SpreadAngle.X, self.Emitter.SpreadAngle.X)),
+		math.rad(math.random(-self.Emitter.SpreadAngle.Y, self.Emitter.SpreadAngle.Y))
+	)
+
+	self.RotSpeed = Vector3.new(
+		math.rad(math.random(self.Emitter.RotSpeed.X.Min, self.Emitter.RotSpeed.X.Max)),
+		math.rad(math.random(self.Emitter.RotSpeed.Y.Min, self.Emitter.RotSpeed.Y.Max)),
+		math.rad(math.random(self.Emitter.RotSpeed.Z.Min, self.Emitter.RotSpeed.Z.Max))
+	)
+	self.Acceleration = self.Emitter.Acceleration
+	self.Rotation = Vector3.zero
+	self.Transparency = self.Emitter.Transparency
+	self.Ticks = 0
+
+	self.maxAge = math.random(self.Emitter.Lifetime.Min, self.Emitter.Lifetime.Max)
+	self.Age = 0
+	self.Cached = false
+	self.isDead = false
+	table.remove(self.Emitter.Cache, table.find(self.Emitter.Cache, self))
+	return self
+end
+
+function ParticleClass:Cache()
+	self.Position = Vector3.one * 10e8
+	self.Cached = true
+	table.remove(self.Emitter.particles, table.find(self.Emitter.particles, self))
+	table.insert(self.Emitter.Cache, self)
+
+	return self
+end
 
 
 function ParticleClass:Update(delta)
 
-	if self.Age >= self.maxAge and self.maxAge > 0 then 
-		self:Destroy()
-		return
+	if self.Age >= self.maxAge and self.maxAge > 0 and not self.Cached then
+		if self.DestroyOnComplete then
+			self:Destroy()
+		else
+			self:Cache()
+		end
+		return self.Instance.CFrame
 	end
 
 
@@ -270,12 +322,17 @@ function ParticleClass:Update(delta)
 	self.Speed += Rotate(Rotate(self.Acceleration * delta, -self.SpreadAngle.X, xAxis), -self.SpreadAngle.Y, yAxis)
 	self.Position += (dir) * delta
 	self.Rotation += self.RotSpeed * delta
-	self.Instance.CFrame = CFrame.new(self.Position) * CFrame.fromEulerAnglesXYZ(self.Rotation.X, self.Rotation.Y, self.Rotation.Z)
-
+	return CFrame.new(self.Position) * CFrame.fromEulerAnglesXYZ(self.Rotation.X, self.Rotation.Y, self.Rotation.Z)
 end
 
 function ParticleClass:Destroy()
 	self.isDead = true
+	
+	if self.Cached then
+		table.remove(self.Emitter.Cache, table.find(self.Emitter.Cache, self))
+	else
+		table.remove(self.Emitter.particles, table.find(self.Emitter.particles, self))
+	end
 	self.Instance:Destroy()
 end
 
@@ -290,9 +347,11 @@ ParticleEmitterClass.__index = ParticleEmitterClass
 --NOTE: COLOR DOES NOT HAVE ANY EFFECT IF A TEXTURE IS PROVIDED
 function ParticleEmitterClass.new(Anchor: BasePart, Mesh: string, Texture: string)
 	local self = {} :: ParticleEmitter3D
+	self.NumActiveParticles = 0
 	self.Container = Instance.new("Folder", workspace)
 	self.Container.Name = "ParticleContainer"
 	self.particles = {}
+	self.Cache = {}
 	self.Enabled = false
 	self.Mesh = Mesh
 	self.Anchor = Anchor
@@ -325,27 +384,55 @@ function ParticleEmitterClass.new(Anchor: BasePart, Mesh: string, Texture: strin
 	self.__elapsedTime = 0
 
 	self.__runServiceConnection = game:GetService("RunService").Heartbeat:Connect(function(delta)
-
-
+		
+		local _cfs, _insts = {}, {}
 		self.__elapsedTime = self.__elapsedTime + delta	
 		for index, particle in ipairs(self.particles) do
 			if particle.isDead then 
 				table.remove(self.particles, index)
 			else
-				particle:Update(delta)
+				if not particle.Cached then
+					table.insert(_cfs, particle:Update(delta))
+					table.insert(_insts, particle.Instance)
+
+				end
 			end
 		end
+		workspace:BulkMoveTo(_insts, _cfs, Enum.BulkMoveMode.FireCFrameChanged)
+		table.clear(_cfs)
+		table.clear(_insts)
 
 
 		if self.Rate > 0 and (self.__dead == false) and self.Enabled then
 			while self.__elapsedTime >= (1/self.Rate) do
-				table.insert(self.particles, ParticleClass.new(self))
+				self:CreateParticle()
 				self.__elapsedTime = self.__elapsedTime - (1/self.Rate)
 			end
 		end
+		local maxParticlesActive: number = self.Rate * self.Lifetime.Max
+		while self.NumActiveParticles > maxParticlesActive do
+			self.NumActiveParticles -= 1
+			self.particles[math.random(1, #self.particles)]:Destroy()
+		end
+		
 	end)
 
 	return setmetatable(self :: any, ParticleEmitterClass)
+end
+
+function ParticleEmitterClass:CreateParticle()
+	
+	
+	local maxParticlesActive: number = self.Rate * self.Lifetime.Max
+	if self.NumActiveParticles < maxParticlesActive then
+		self.NumActiveParticles += 1
+		table.insert(self.particles, ParticleClass.new(self, false))
+	else
+		if #self.Cache > 0 then
+			table.insert(self.particles, self.Cache[1]:Revive())
+		end
+	end
+	return self
 end
 
 
@@ -354,7 +441,7 @@ function ParticleEmitterClass:Emit(count: number)
 
 	while counter < count do
 		counter += 1
-		table.insert(self.particles, ParticleClass.new(self))
+		table.insert(self.particles, ParticleClass.new(self, true))
 	end
 	return self
 end
