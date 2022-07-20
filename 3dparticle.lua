@@ -24,6 +24,7 @@ export type ParticleEmitter3D = {
 	Mesh: string,
 	Texture: string,
 	Anchor: BasePart,
+	All: {Particle},
 	preSpawn: (Particle) -> (),
 	Rate: number,
 	Color: ColorSequence,
@@ -281,11 +282,13 @@ function ParticleClass:Revive()
 end
 
 function ParticleClass:Cache()
-	self.Position = Vector3.one * 10e8
 	self.Cached = true
+	
+	
 	table.remove(self.Emitter.particles, table.find(self.Emitter.particles, self))
 	table.insert(self.Emitter.Cache, self)
-
+	self.Position = Vector3.one * 10e8
+	self.Instance.CFrame = CFrame.new(self.Position)
 	return self
 end
 
@@ -356,7 +359,7 @@ function ParticleEmitterClass.new(Anchor: BasePart, Mesh: string, Texture: strin
 	self.Mesh = Mesh
 	self.Anchor = Anchor
 	self.Texture = Texture
-
+	self.All = {}
 	self.preSpawn = function(p) end
 
 	--properties
@@ -426,7 +429,9 @@ function ParticleEmitterClass:CreateParticle()
 	local maxParticlesActive: number = self.Rate * self.Lifetime.Max
 	if self.NumActiveParticles < maxParticlesActive then
 		self.NumActiveParticles += 1
-		table.insert(self.particles, ParticleClass.new(self, false))
+		local p = ParticleClass.new(self, false)
+		table.insert(self.All, p)
+		table.insert(self.particles, p)
 	else
 		if #self.Cache > 0 then
 			table.insert(self.particles, self.Cache[1]:Revive())
@@ -454,15 +459,18 @@ function ParticleEmitterClass:Destroy()
 	end
 
 	self.__dead = true
-	for _,particle in ipairs(self.particles) do
+	for _,particle in ipairs(self.All) do
 		if particle then
 			particle:Destroy()
 		end
 	end
-
 	if self.__runServiceConnection then
 		self.__runServiceConnection:Disconnect()
 	end
+	for k,_ in pairs(self) do
+		self[k] = nil
+	end
+
 end
 
 return ParticleEmitterClass
